@@ -1,0 +1,129 @@
+#!/bin/bash
+#
+# Automatically create a test VM setup from a base image
+# Creates linked clones to save space and anticipates
+# that the hosts will set their hostname from the vbox
+# property /Startup/Hostname
+#
+# See https://beyondthekube.com/thing for details
+#
+# Known issues:
+#    - the sort -r for the delete of snapshots is a lttle
+#      lame. Works for <10 VMs, which suits my use-case
+#
+
+ACTION=$1
+# Feel free to run as BASE_VM=my-better-base ./playground ..
+BASE_VM="${BASE_VM:-playground-base}"
+
+function usage() {
+  echo "Usage:"
+  echo "$(basename $0) (create|list|delete) [..options..]"
+  echo "              create <number> [prefix]"
+  echo "              list [prefix]"
+  echo "              delete [prefix]"
+  exit 1
+}
+
+function snap_exists() {
+  # Return 0/1 if a VM snapshot of name $snap exists
+  local vm=$1
+  local snap=$2
+  vboxmanage snapshot ${vm} list 2>&1| grep "Name: ${snap} (" 2>&1
+  return $?
+}
+
+function vm_running() {
+  # Return 0/1 if a running vm matching $vm exists.
+  # exact math only unless $prefix is set true
+  local vm=$1
+  local prefix=$2
+  if [[ -z prefix ]]; then
+    vboxmanage list runningvms 2>&1 | grep "^\"${vm}\"" >/dev/null 2>&1
+  else
+    vboxmanage list runningvms 2>&1 | grep "^\"${vm}" >/dev/null 2>&1
+  fi
+  return $?
+}
+
+function list_vms() {
+  # list all VMS with prefix $prefix
+  local user_prefix=$1
+  local prefix="${user_prefix:-playground}"
+  # always exclude the $BASE_VM from lists
+  vboxmanage list vms | grep "^\"${prefix}" | grep -v "^\"${BASE_VM}\"" | awk '{print $1}' |  sed 's/"//g' 
+}
+
+function create_vms() {
+  # Create $num VMs from the $BASE_VM as linked clones
+  local num=$1
+  local user_prefix=$2
+  local prefix="${user_prefix:-playground}"
+  local clone
+  local snap
+  if vm_running $BASE_VM; then
+    echo "Cloning the base vm ${BASE_VM} requires it to be stopped. Please do that first"
+  fi
+  for i in $(seq 1 $num); do
+    clone="${prefix}${i}"
+    snap="${clone}-base"
+    if snap_exists ${BASE_VM} ${snap}; then
+      echo "Reusing existnig snapshot ${BASE_VM}::${snap}"
+    else
+      vboxmanage snapshot ${BASE_VM} take ${snap} --description "base snapshot for clone ${clone}"
+    fi
+    vboxmanage clonevm ${BASE_VM} --name ${clone} --snapshot ${snap} --options link --register
+    vboxmanage guestproperty set ${clone} /Startup/Hostname "$clone"
+    vboxmanage startvm ${clone}
+  done
+}
+
+function destroy_vms() {
+  # Delete VMs patching $prefix and associated snapshots
+  local prefix=$1
+  local snap
+  local snap_uuid
+  local gone
+  for vm in $(list_vms $prefix | sort -r); do
+    vboxmanage controlvm ${vm} poweroff
+    gone=1
+    while [[ $gone != 0 ]]; do  
+        vboxmanage unregistervm ${vm} --delete >/dev/null 2>&1
+        gone=$?
+    done
+    snap="${vm}-base"
+    snap_uuid=$(snap_exists ${BASE_VM} ${snap} | sed 's/^.*UUID: \(.*\)).*/\1/')
+    while [[ ! -z ${snap_uuid} ]]; do
+      vboxmanage snapshot ${BASE_VM} delete ${snap_uuid}
+      sleep 1
+      snap_uuid=$(snap_exists ${BASE_VM} ${snap} | sed 's/^.*UUID: \(.*\)).*/\1/')
+    done
+  done
+}
+
+# Poor-man's argparsing
+case "${ACTION}" in
+  "create")
+    shift
+    num=$1; shift
+    prefix=$1; shift
+    if [[ -z ${num} ]]; then
+        usage
+    fi
+    create_vms ${num} ${prefix}
+    ;;
+  "list")
+    shift
+    prefix=$1; shift
+    list_vms ${prefix}
+    ;;
+  "delete")
+    shift
+    prefix=$1; shift
+    destroy_vms ${prefix}
+    ;;
+  *)
+    usage
+    ;;
+esac
+

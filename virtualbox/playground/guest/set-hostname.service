@@ -1,0 +1,11 @@
+[Unit]
+Description=Set hostnmae from Virtualbox property
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/root/set-hostname
+TimeoutStartSec=0
+
+[Install]
+WantedBy=default.target

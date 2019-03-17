@@ -1,0 +1,16 @@
+#!/bin/bash 
+
+required_hostname=$(VBoxControl guestproperty get /Startup/Hostname 2>&1 | grep "^Value" | sed 's/^Value: //')
+current_hostname=$(hostname)
+
+if [[ "X$required_hostname" != "X$current_hostname" ]]; then
+  if [[ "X$required_hostname" == "X" ]]; then
+    echo "No hostname specified in /Startup/Hostname property. Please set it"
+    sleep 600
+  else
+    echo "Hostname is incorrectly set. Setting to $required_hostname"
+    echo "$required_hostname" > /etc/hostname
+    sync
+  fi
+  reboot
+fi 
